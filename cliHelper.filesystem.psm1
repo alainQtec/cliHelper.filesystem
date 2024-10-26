@@ -25,57 +25,74 @@ class FsOrganizer {
   # Uses AI to understand and organize files intuitively
   FsOrganizer() {}
 
-  static [FileExtensionInfo[]] GetFileExtensionInfo([string]$Path) {
-    return [FsOrganizer]::GetFileExtensionInfo($Path, $false, $false)
-  }
-  static [FileExtensionInfo[]] GetFileExtensionInfo([string]$Path, [bool]$Recurse, [bool]$IncludeHidden) {
-    #convert the path to a file system path
-    $rPath = Resolve-Path -Path $Path
-    #capture the current date and time for the audit date
-    $report = Get-Date
-    Try {
-      $enumOpt = [IO.EnumerationOptions]::new()
+  static [DirectoryInfo[]] GetDirectories([string]$Path, [bool]$IncludeHidden) {
+    [string]$path = Resolve-Path -LiteralPath $path
+    $ErrorActionPreference = "Stop"; $result = @()
+    try {
+      $di = [DirectoryInfo]::new($path)
+      if ($IncludeHidden) {
+        $top = $di.GetDirectories()
+      } else {
+        $top = ($di.GetDirectories()).Where({ $_.attributes -notmatch "hidden" })
+      }
+      $result += $top
+      foreach ($d in $top) {
+        $result += [FsOrganizer]::GetDirectories($d.fullname, $IncludeHidden)
+      }
     } Catch {
-      Throw "This commands requires PowerShell 7."
+      Write-Warning "Failed on $path. $($_.exception.message)."
     }
-    # if ($Recurse) {
-    #   Write-Verbose "[$((Get-Date).TimeofDay) BEGIN  ] Getting files recursively"
-    # }
-    $enumOpt.RecurseSubdirectories = $Recurse
-    if ($IncludeHidden) { $enumOpt.AttributesToSkip -= 2 }
-    $list = @()
-    $dir = Get-Item -Path $rPath
-    $files = $dir.GetFiles('*', $enumOpt)
-    $group = $files | Group-Object -Property extension
-
-    #Group and measure
-    foreach ($item in $group) {
-      # Write-Verbose "[$((Get-Date).TimeofDay) PROCESS] Measuring $($item.count) $($item.name) files"
-      $measure = $item.Group | Measure-Object -Property length -Minimum -Maximum -Average -Sum
-      $list += [FileExtensionInfo]::Create(@{
-          Path         = $rPath
-          Extension    = $item.Name
-          Count        = $item.Count
-          TotalSize    = $measure.Sum
-          SmallestSize = $measure.Minimum
-          LargestSize  = $measure.Maximum
-          AverageSize  = $measure.Average
-          Computername = [system.environment]::MachineName
-          ReportDate   = $report
-          Files        = $item.group
-          IsLargest    = $False
-        }
-      )
+    return $result
+  }
+  static [FileExtensionInfo[]] GetFileExtensionInfo([string[]]$Paths) {
+    return [FsOrganizer]::GetFileExtensionInfo($Paths, $false, $false)
+  }
+  static [FileExtensionInfo[]] GetFileExtensionInfo([string[]]$Paths, [bool]$Recurse, [bool]$IncludeHidden) {
+    $result = @(); foreach ($Path in $Paths) {
+      $rPath = Resolve-Path -Path $Path
+      #capture the current date and time for the audit date
+      $report = Get-Date
+      Try {
+        $enumOpt = [IO.EnumerationOptions]::new()
+      } Catch {
+        Throw "This commands requires PowerShell 7."
+      }
+      $list = @(); $enumOpt.RecurseSubdirectories = $Recurse
+      if ($IncludeHidden) { $enumOpt.AttributesToSkip -= 2 }
+      $dir = Get-Item -Path $rPath
+      $files = $dir.GetFiles('*', $enumOpt)
+      $group = $files | Group-Object -Property extension
+      #Group and measure
+      foreach ($item in $group) {
+        $measure = $item.Group | Measure-Object -Property length -Minimum -Maximum -Average -Sum
+        $list += [FileExtensionInfo]::Create(@{
+            Path         = $rPath
+            Extension    = $item.Name
+            Count        = $item.Count
+            TotalSize    = $measure.Sum
+            SmallestSize = $measure.Minimum
+            LargestSize  = $measure.Maximum
+            AverageSize  = $measure.Average
+            Computername = [system.environment]::MachineName
+            ReportDate   = $report
+            Files        = $item.group
+            IsLargest    = $False
+          }
+        )
+      }
+      # Mark the extension with the largest total size
+      $($list | Sort-Object -Property TotalSize, Count)[-1].IsLargest = $true
+      Update-TypeData -TypeName FileExtensionInfo -MemberType AliasProperty -MemberName Total -Value TotalSize -Force
+      $result += $list
     }
-    # Mark the extension with the largest total size
-    $($list | Sort-Object -Property TotalSize, Count)[-1].IsLargest = $true
-    Update-TypeData -TypeName FileExtensionInfo -MemberType AliasProperty -MemberName Total -Value TotalSize -Force
-    return $list
+    return $result
   }
   static [FolderSizeInfo[]] GetFolderSizeInfo([string[]]$Paths) {
     return [FsOrganizer]::GetFolderSizeInfo($Paths, $false)
   }
   static [FolderSizeInfo[]] GetFolderSizeInfo([string[]]$Paths, [bool]$IncludeHidden) {
+    # .EXAMPLE
+    #  [FsOrganizer]::GetFolderSizeInfo([FsOrganizer]::GetDirectories($pwd, $false).FullName) | Sort-Object Totalsize -Descending
     $result = @()
     foreach ($item in $Paths) {
       $rPath = Resolve-Path -LiteralPath $item
@@ -171,9 +188,15 @@ class FsOrganizer {
     return $result
   }
   static [FileInfo] GetLastModifiedFile([bool]$Recurse) {
-    return [FsOrganizer]::GetLastModifiedFile("*", ".", [TimeInterval]::Hours, 24)
+    return [FsOrganizer]::GetLastModifiedFile(".", "*", $Recurse)
   }
-  static [FileInfo] GetLastModifiedFile([string]$Filter, [string]$Path, [TimeInterval]$Interval, [int32]$IntervalCount, [bool]$Recurse) {
+  static [FileInfo] GetLastModifiedFile([string]$Path, [string]$Filter, [bool]$Recurse) {
+    return [FsOrganizer]::GetLastModifiedFile($Path, $Filter, [TimeInterval]::Hours, 24)
+  }
+  static [FileInfo] GetLastModifiedFile([string]$Path, [string]$Filter, [TimeInterval]$Interval, [int32]$IntervalCount) {
+    return [FsOrganizer]::GetLastModifiedFile($Path, $Filter, $Interval, $IntervalCount, $false)
+  }
+  static [FileInfo] GetLastModifiedFile([string]$Path, [string]$Filter, [TimeInterval]$Interval, [int32]$IntervalCount, [bool]$Recurse) {
     [ValidateScript({
         #this will write a custom error message if validation fails
         If ((Test-Path -Path $_ -PathType Container) -and ((Get-Item -Path $_).psprovider.name -eq 'Filesystem')) {
@@ -186,14 +209,7 @@ class FsOrganizer {
     )][string]$Path = $Path
     $msg = "Searching {0} for {1} files modified in the last {2} {3}." -f (Resolve-Path $Path), $filter, $IntervalCount, $Interval
     Write-Verbose $msg
-
-    $last = switch ($Interval) {
-      "minutes" { (Get-Date).AddMinutes(-$IntervalCount); break }
-      "hours" { (Get-Date).AddHours(-$IntervalCount); break }
-      "days" { (Get-Date).AddDays(-$IntervalCount); break }
-      "months" { (Get-Date).AddMonths(-$IntervalCount); break }
-      "years" { (Get-Date).AddYears(-$IntervalCount); break }
-    }
+    $last = (Get-Date)."Add$Interval"(-$IntervalCount)
     Write-Verbose "Cutoff date is $Last"
     $Params = @{
       Filter  = $Filter
@@ -229,7 +245,6 @@ class FsOrganizer {
         break
       }
       $($hostOs -in ("Linux", "FreeBSD")) {
-        Write-Verbose "Linux recent files are typically stored in ~/.local/share/recently-used.xbel"
         $recentlyUsedPath = Join-Path $_HOME ".local/share/recently-used.xbel"
         if (Test-Path $recentlyUsedPath) {
           [xml]$xbelContent = Get-Content $recentlyUsedPath
@@ -242,10 +257,11 @@ class FsOrganizer {
       }
       $($hostOs -eq "MacOSX") {
         # macOS recent files can be retrieved using SQLite database in ~/Library/Application Support/com.apple.sharedfilelist/
+        # TODO: Fix this:
+        # - I don't have a mac, never tested this!
+        # - This requires additional processing as the file is in a binary format, you might need to use additional tools or APIs to read this properly
         $recentItemsPath = Join-Path $_HOME "Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.RecentDocuments.sfl2"
         if (Test-Path $recentItemsPath) {
-          # Note: This requires additional processing as the file is in a binary format
-          # You might need to use additional tools or APIs to read this properly
           $recentItems = Get-ChildItem -Path (Join-Path $_HOME "Library/Recent")
           $recentItems | Select-Object -ExpandProperty Name
         }
@@ -268,26 +284,6 @@ class FsOrganizer {
         }
       }
     )
-  }
-  static [DirectoryInfo] GetDirectories([string]$Path, [bool]$IncludeHidden) {
-    # write-host $path -ForegroundColor cyan
-    $path = Resolve-Path -LiteralPath $path
-    $ErrorActionPreference = "Stop"; $result = @()
-    try {
-      $di = [DirectoryInfo]::new($path)
-      if ($IncludeHidden) {
-        $top = $di.GetDirectories()
-      } else {
-        $top = ($di.GetDirectories()).Where({ $_.attributes -notmatch "hidden" })
-      }
-      $result += $top
-      foreach ($t in $top) {
-        $result += [FsOrganizer]::GetDirectories($t.fullname, $IncludeHidden)
-      }
-    } Catch {
-      Write-Warning "Failed on $path. $($_.exception.message)."
-    }
-    return $result
   }
   static [PSCustomObject] GetLocalizedData([string]$RootPath) {
     [void][Directory]::SetCurrentDirectory($RootPath)
