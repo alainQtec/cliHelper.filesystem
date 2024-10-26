@@ -30,6 +30,8 @@ class FsOrganizer {
     return [FsOrganizer]::GetDirectories([FsOrganizer]::GetUnResolvedPath($Path), $Recurse, $false)
   }
   static [DirectoryInfo[]] GetDirectories([string]$Path, [bool]$Recurse, [bool]$IncludeHidden) {
+    # .EXAMPLE
+    # [FsOrganizer]::GetDirectories($pwd, $false)
     [string]$path = [FsOrganizer]::GetResolvedPath($Path)
     $ErrorActionPreference = "Stop"; $result = @()
     try {
@@ -191,7 +193,7 @@ class FsOrganizer {
   }
   static [FileInfo] GetLastModifiedFile([string]$Path, [string]$Filter, [TimeInterval]$Interval, [int32]$IntervalCount, [bool]$Recurse) {
     [ValidateScript({
-        #this will write a custom error message if validation fails
+        # This will write a custom error message if validation fails
         If ((Test-Path -Path $_ -PathType Container) -and ((Get-Item -Path $_).psprovider.name -eq 'Filesystem')) {
           return $True
         } else {
@@ -298,7 +300,7 @@ class FsOrganizer {
       $commonLength--
     }
     Write-Verbose "Common base: $commonLength $($RelativeTo.Substring(0,$commonLength))"
-    # create '..' segments for segments past the common on the "$RelativeTo" path
+    # Create '..' segments for segments past the common on the "$RelativeTo" Path
     if ($commonLength -lt $RelativeTo.Length) {
       $result = @('..') * @($RelativeTo.Substring($commonLength).Split([IO.Path]::DirectorySeparatorChar).Where{ $_ }).Length -join ([IO.Path]::DirectorySeparatorChar)
     }
@@ -334,7 +336,7 @@ class FsOrganizer {
       }
     )
   }
-  static [PSCustomObject] GetLocalizedData([string]$RootPath) {
+  static [PsCustomObject] GetLocalizedData([string]$RootPath) {
     $RootPath = [FsOrganizer]::GetUnResolvedPath($RootPath)
     $psdFile = [FileInfo]::new([IO.Path]::Combine($RootPath, [System.Threading.Thread]::CurrentThread.CurrentCulture.Name, 'cliHelper.filesystem.strings.psd1'))
     if (!$psdFile.Exists) { throw [FileNotFoundException]::new('Unable to find the LocalizedData file!', $psdFile) }
