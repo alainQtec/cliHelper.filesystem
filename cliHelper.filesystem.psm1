@@ -27,10 +27,10 @@ class FsOrganizer {
   FsOrganizer() {}
 
   static [DirectoryInfo[]] GetDirectories([string]$Path, [bool]$Recurse) {
-    return [FsOrganizer]::GetDirectories($Path, $Recurse, $false)
+    return [FsOrganizer]::GetDirectories([FsOrganizer]::GetUnResolvedPath($Path), $Recurse, $false)
   }
   static [DirectoryInfo[]] GetDirectories([string]$Path, [bool]$Recurse, [bool]$IncludeHidden) {
-    [string]$path = Resolve-Path -LiteralPath $path
+    [string]$path = [FsOrganizer]::GetResolvedPath($Path)
     $ErrorActionPreference = "Stop"; $result = @()
     try {
       $di = [DirectoryInfo]::new($path)
@@ -51,7 +51,7 @@ class FsOrganizer {
     $enumOpt.RecurseSubdirectories = $Recurse
     if ($IncludeHidden) { $enumOpt.AttributesToSkip -= 2 }
     foreach ($Path in $Paths) {
-      $list = @(); $rPath = Resolve-Path -Path $Path
+      $list = @(); $rPath = [FsOrganizer]::GetResolvedPath($Path)
       $dir = Get-Item -Path $rPath
       $files = $dir.GetFiles('*', $enumOpt)
       $group = $files | Group-Object -Property extension
@@ -88,7 +88,7 @@ class FsOrganizer {
     #  [FsOrganizer]::GetFolderSizeInfo([FsOrganizer]::GetDirectories($pwd, $false).FullName) | Sort-Object Totalsize -Descending
     $result = @()
     foreach ($item in $Paths) {
-      $rPath = Resolve-Path -LiteralPath $item
+      $rPath = [FsOrganizer]::GetResolvedPath($item)
       if (![IO.Path]::Exists($rPath)) {
         Write-Warning "Can't find $rPath on $([System.Environment]::MachineName)"
         continue
@@ -200,13 +200,13 @@ class FsOrganizer {
         }
       }
     )][string]$Path = $Path
-    $msg = "Searching {0} for {1} files modified in the last {2} {3}." -f (Resolve-Path $Path), $filter, $IntervalCount, $Interval
+    $msg = "Searching {0} for {1} files modified in the last {2} {3}." -f ([FsOrganizer]::GetResolvedPath($Path)), $filter, $IntervalCount, $Interval
     Write-Verbose $msg
     $last = (Get-Date)."Add$Interval"(-$IntervalCount)
     Write-Verbose "Cutoff date is $Last"
     $Params = @{
       Filter  = $Filter
-      Path    = Resolve-Path $Path
+      Path    = [FsOrganizer]::GetResolvedPath($Path)
       File    = $true
       Recurse = $Recurse
     }
@@ -266,6 +266,62 @@ class FsOrganizer {
     }
     return $result
   }
+  static [string] GetRelativePath([string]$RelativeTo, [string]$Path) {
+    # $RelativeTo : The source path the result should be relative to. This path is always considered to be a directory.
+    # $Path : The destination path.
+    $result = [string]::Empty
+    $Drive = $Path -replace "^([^\\/]+:[\\/])?.*", '$1'
+    if ($Drive -ne ($RelativeTo -replace "^([^\\/]+:[\\/])?.*", '$1')) {
+      Write-Verbose "Paths on different drives"
+      return $Path
+    }
+    $RelativeTo = $RelativeTo -replace "^[^\\/]+:[\\/]", [IO.Path]::DirectorySeparatorChar
+    $Path = $Path -replace "^[^\\/]+:[\\/]", [IO.Path]::DirectorySeparatorChar
+    $RelativeTo = [IO.Path]::GetFullPath($RelativeTo).TrimEnd('\/') -replace "^[^\\/]+:[\\/]", [IO.Path]::DirectorySeparatorChar
+    $Path = [IO.Path]::GetFullPath($Path) -replace "^[^\\/]+:[\\/]", [IO.Path]::DirectorySeparatorChar
+
+    $commonLength = 0
+    while ($Path[$commonLength] -eq $RelativeTo[$commonLength]) {
+      $commonLength++
+    }
+    if ($commonLength -eq $RelativeTo.Length -and $RelativeTo.Length -eq $Path.Length) {
+      Write-Verbose "Equal Paths"
+      return "." # The same paths
+    }
+    if ($commonLength -eq 0) {
+      Write-Verbose "Paths on different drives?"
+      return $Drive + $Path
+    }
+    Write-Verbose "Common base: $commonLength $($RelativeTo.Substring(0,$commonLength))"
+    # In case we matched PART of a name, like C:/Users/Joel and C:/Users/Joe
+    while ($commonLength -gt $RelativeTo.Length -and ($RelativeTo[$commonLength] -ne [IO.Path]::DirectorySeparatorChar)) {
+      $commonLength--
+    }
+    Write-Verbose "Common base: $commonLength $($RelativeTo.Substring(0,$commonLength))"
+    # create '..' segments for segments past the common on the "$RelativeTo" path
+    if ($commonLength -lt $RelativeTo.Length) {
+      $result = @('..') * @($RelativeTo.Substring($commonLength).Split([IO.Path]::DirectorySeparatorChar).Where{ $_ }).Length -join ([IO.Path]::DirectorySeparatorChar)
+    }
+    return (@($result, $Path.Substring($commonLength).TrimStart([IO.Path]::DirectorySeparatorChar)).Where{ $_ } -join ([IO.Path]::DirectorySeparatorChar))
+  }
+  static [string] GetResolvedPath([string]$Path) {
+    return [FsOrganizer]::GetResolvedPath($((Get-Variable ExecutionContext).Value.SessionState), $Path)
+  }
+  static [string] GetResolvedPath([System.Management.Automation.SessionState]$session, [string]$Path) {
+    $paths = $session.Path.GetResolvedPSPathFromPSPath($Path);
+    if ($paths.Count -gt 1) {
+      throw [IOException]::new([string]::Format([cultureinfo]::InvariantCulture, "Path {0} is ambiguous", $Path))
+    } elseif ($paths.Count -lt 1) {
+      throw [IOException]::new([string]::Format([cultureinfo]::InvariantCulture, "Path {0} not Found", $Path))
+    }
+    return $paths[0].Path
+  }
+  static [string] GetUnResolvedPath([string]$Path) {
+    return [FsOrganizer]::GetUnResolvedPath($((Get-Variable ExecutionContext).Value.SessionState), $Path)
+  }
+  static [string] GetUnResolvedPath([System.Management.Automation.SessionState]$session, [string]$Path) {
+    return $session.Path.GetUnresolvedProviderPathFromPSPath($Path)
+  }
   static [string] GetHostOs() {
     return $(switch ($true) {
         $([RuntimeInformation]::IsOSPlatform([OSPlatform]::Windows)) { "Windows"; break }
@@ -279,6 +335,7 @@ class FsOrganizer {
     )
   }
   static [PSCustomObject] GetLocalizedData([string]$RootPath) {
+    $RootPath = [FsOrganizer]::GetUnResolvedPath($RootPath)
     $psdFile = [FileInfo]::new([IO.Path]::Combine($RootPath, [System.Threading.Thread]::CurrentThread.CurrentCulture.Name, 'cliHelper.filesystem.strings.psd1'))
     if (!$psdFile.Exists) { throw [FileNotFoundException]::new('Unable to find the LocalizedData file!', $psdFile) }
     return [scriptblock]::Create("$([IO.File]::ReadAllText($psdFile))").Invoke()
@@ -289,7 +346,7 @@ $CurrentCulture = [System.Threading.Thread]::CurrentThread.CurrentCulture.Name
 $script:localizedData = if ($null -ne (Get-Command Get-LocalizedData -ErrorAction SilentlyContinue)) {
   Get-LocalizedData -DefaultUICulture $CurrentCulture
 } else {
-  [FsOrganizer]::GetLocalizedData((Resolve-Path .).Path)
+  [FsOrganizer]::GetLocalizedData(".")
 }
 
 # Types that will be available to users when they import the module.
