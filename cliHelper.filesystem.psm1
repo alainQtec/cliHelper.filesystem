@@ -23,8 +23,12 @@ enum TimeInterval {
 class FsOrganizer {
   #.SYNOPSIS
   # Uses AI to understand and organize files intuitively
+
   FsOrganizer() {}
 
+  static [DirectoryInfo[]] GetDirectories([string]$Path, [bool]$Recurse) {
+    return [FsOrganizer]::GetDirectories($Path, $Recurse, $false)
+  }
   static [DirectoryInfo[]] GetDirectories([string]$Path, [bool]$Recurse, [bool]$IncludeHidden) {
     [string]$path = Resolve-Path -LiteralPath $path
     $ErrorActionPreference = "Stop"; $result = @()
@@ -43,15 +47,11 @@ class FsOrganizer {
     return [FsOrganizer]::GetFileExtensionInfo($Paths, $false, $false)
   }
   static [FileExtensionInfo[]] GetFileExtensionInfo([string[]]$Paths, [bool]$Recurse, [bool]$IncludeHidden) {
-    $result = @(); foreach ($Path in $Paths) {
-      $rPath = Resolve-Path -Path $Path
-      Try {
-        $enumOpt = [IO.EnumerationOptions]::new()
-      } Catch {
-        Throw "This commands requires PowerShell 7."
-      }
-      $list = @(); $enumOpt.RecurseSubdirectories = $Recurse
-      if ($IncludeHidden) { $enumOpt.AttributesToSkip -= 2 }
+    $result = @(); $enumOpt = [IO.EnumerationOptions]::new()
+    $enumOpt.RecurseSubdirectories = $Recurse
+    if ($IncludeHidden) { $enumOpt.AttributesToSkip -= 2 }
+    foreach ($Path in $Paths) {
+      $list = @(); $rPath = Resolve-Path -Path $Path
       $dir = Get-Item -Path $rPath
       $files = $dir.GetFiles('*', $enumOpt)
       $group = $files | Group-Object -Property extension
@@ -279,7 +279,6 @@ class FsOrganizer {
     )
   }
   static [PSCustomObject] GetLocalizedData([string]$RootPath) {
-    [void][Directory]::SetCurrentDirectory($RootPath)
     $psdFile = [FileInfo]::new([IO.Path]::Combine($RootPath, [System.Threading.Thread]::CurrentThread.CurrentCulture.Name, 'cliHelper.filesystem.strings.psd1'))
     if (!$psdFile.Exists) { throw [FileNotFoundException]::new('Unable to find the LocalizedData file!', $psdFile) }
     return [scriptblock]::Create("$([IO.File]::ReadAllText($psdFile))").Invoke()
