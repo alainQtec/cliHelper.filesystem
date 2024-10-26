@@ -25,22 +25,17 @@ class FsOrganizer {
   # Uses AI to understand and organize files intuitively
   FsOrganizer() {}
 
-  static [DirectoryInfo[]] GetDirectories([string]$Path, [bool]$IncludeHidden) {
+  static [DirectoryInfo[]] GetDirectories([string]$Path, [bool]$Recurse, [bool]$IncludeHidden) {
     [string]$path = Resolve-Path -LiteralPath $path
     $ErrorActionPreference = "Stop"; $result = @()
     try {
       $di = [DirectoryInfo]::new($path)
-      if ($IncludeHidden) {
-        $top = $di.GetDirectories()
-      } else {
-        $top = ($di.GetDirectories()).Where({ $_.attributes -notmatch "hidden" })
-      }
-      $result += $top
-      foreach ($d in $top) {
-        $result += [FsOrganizer]::GetDirectories($d.fullname, $IncludeHidden)
-      }
+      $enumOpt = [IO.EnumerationOptions]::new()
+      $enumOpt.RecurseSubdirectories = $Recurse
+      if ($IncludeHidden) { $enumOpt.AttributesToSkip -= 2 }
+      $result += $di.GetDirectories("*", $enumOpt)
     } Catch {
-      Write-Warning "Failed on $path. $($_.exception.message)."
+      throw $_.exception
     }
     return $result
   }
@@ -50,8 +45,6 @@ class FsOrganizer {
   static [FileExtensionInfo[]] GetFileExtensionInfo([string[]]$Paths, [bool]$Recurse, [bool]$IncludeHidden) {
     $result = @(); foreach ($Path in $Paths) {
       $rPath = Resolve-Path -Path $Path
-      #capture the current date and time for the audit date
-      $report = Get-Date
       Try {
         $enumOpt = [IO.EnumerationOptions]::new()
       } Catch {
@@ -74,7 +67,7 @@ class FsOrganizer {
             LargestSize  = $measure.Maximum
             AverageSize  = $measure.Average
             Computername = [system.environment]::MachineName
-            ReportDate   = $report
+            ReportDate   = Get-Date
             Files        = $item.group
             IsLargest    = $False
           }
