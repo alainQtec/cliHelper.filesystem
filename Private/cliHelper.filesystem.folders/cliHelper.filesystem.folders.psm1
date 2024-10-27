@@ -12,12 +12,15 @@ class FileSystemWatcherHelper {
 class FolderSizeInfo {
   [string]$Path
   [string]$Name
-  [int]$TotalFiles
-  [int]$TotalSize
-  hidden [string]$Computername = [Environment]::MachineName
+  [Int64]$FilesCount
+  [string]$TotalSize
 
-  static [FolderSizeInfo] Create([hashtable]$Properties) {
-    return New-Object -TypeName FolderSizeInfo -Property $Properties
+  FolderSizeInfo() {}
+  FolderSizeInfo([string]$Path, [Int64]$TotalSize, [string]$Name, [Int64]$FilesCount) {
+    $this.Path = $Path
+    $this.Name = $Name
+    $this.FilesCount = $FilesCount
+    $this.TotalSize = "{0} MB" -f ($TotalSize / 1MB).ToString("N2")
   }
 }
 
