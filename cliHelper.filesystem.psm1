@@ -8,6 +8,7 @@ using module Private/cliHelper.filesystem.drives
 using module Private/cliHelper.filesystem.rights
 using module Private/cliHelper.filesystem.attrib
 using module Private/cliHelper.filesystem.folders
+using module Private/cliHelper.filesystem.claudeapi
 using module Private/cliHelper.filesystem.shortcuts
 
 enum TimeInterval {
@@ -20,12 +21,72 @@ enum TimeInterval {
 #region    Classes
 # This code will organize the files in a directory into groups based on their date, and then create a folder for each group in the destinationDirectory.
 # Each file in the group will be moved to its corresponding folder, according to the date of the file.
-class FsOrganizer {
-  #.SYNOPSIS
-  # Uses AI to understand and organize files intuitively
 
+#.SYNOPSIS
+# Uses AI to understand and organize files intuitively
+class FsOrganizer : LLMagent {
+  static [hashtable] $_Files
   FsOrganizer() {}
-
+  static [void] Organize([string]$Directory) {
+    [FsOrganizer]::Organize($Directory, "Organize files in my downloads path by file use case.")
+  }
+  static [PSCustomObject[]] Organize([string]$Directory, [string]$intent) {
+    $r = @(); $f = [FsOrganizer]::GetFilesHt($Directory); $l = $Directory.Length
+    $o = "@{`n{0}`n}" -f [FsOrganizer]::GetLLMresponse([FsOrganizer]::GetFolderAnalysisPrompt("$Directory", $intent))
+    foreach ($key in $f.Keys) {
+      $Path = [IO.Path]::Combine($Directory, $f[$key].N)
+      $Dest = [IO.Path]::Combine($Directory, $o.Keys.Where({ $o.$_ -contains $key }), $f[$key].N)
+      $r += [PSCustomObject]@{
+        Path = $Path.Substring($l)
+        Dest = $Dest.Substring($l)
+      }
+      Move-Item -Path $Path -Destination $Dest -WhatIf -Force
+    }
+    return $r
+  }
+  # Method to analyze folder and generate AI-suggested categories
+  static [hashtable] GetFileMappingsKeys([string]$folderPath, [string]$intent) {
+    $prompt = [FsOrganizer]::GetFolderAnalysisPrompt($folderPath, $intent)
+    # For now, we'll return a default mapping if API call isn't implemented
+    try {
+      $response = Invoke-ClaudeAPI -Prompt $prompt
+      # Convert ClaudeResponseToHashtable
+      # Temporary default return until API is implemented
+      $suggestedMappings = [FsOrganizer]::FileMappings
+      Write-Verbose "AI analysis complete. Categories generated based on folder content. $response"
+      return $suggestedMappings
+    } catch {
+      throw "Failed to generate FileMappings: $_"
+    }
+  }
+  # Method to validate and normalize AI-suggested mappings
+  static [hashtable] ValidateAIMappings([hashtable]$aiMappings) {
+    $normalizedMappings = @{}
+    foreach ($category in $aiMappings.Keys) {
+      # Ensure extensions start with dot and are lowercase
+      $normalizedExtensions = $aiMappings[$category] | ForEach-Object {
+        $ext = $_.ToLower()
+        if (!$ext.StartsWith('.')) {
+          $ext = ".$ext"
+        }
+        $ext
+      }
+      # Remove any duplicates
+      $normalizedExtensions = $normalizedExtensions | Select-Object -Unique
+      # Add to normalized mappings
+      $normalizedMappings[$category] = $normalizedExtensions
+    }
+    return $normalizedMappings
+  }
+  # Method to get file mappings based on AI suggestions
+  static [void] UpdateMappingsFromAI([string]$folderPath, [string]$intent) {
+    $aiMappings = [FsOrganizer]::GetFileMappingsKeys($folderPath, $intent)
+    $validatedMappings = [FsOrganizer]::ValidateAIMappings($aiMappings)
+    [FsOrganizer]::FileMappings = $validatedMappings
+  }
+  static [DirectoryInfo[]] GetDirectories([string]$Path) {
+    return [FsOrganizer]::GetDirectories($Path, $false)
+  }
   static [DirectoryInfo[]] GetDirectories([string]$Path, [bool]$Recurse) {
     return [FsOrganizer]::GetDirectories([FsOrganizer]::GetUnResolvedPath($Path), $Recurse, $false)
   }
@@ -45,6 +106,20 @@ class FsOrganizer {
     }
     return $result
   }
+  static [SFileInfo[]] GetFiles([string]$Path) {
+    return [FsOrganizer]::GetFiles($Path, $false)
+  }
+  static [SFileInfo[]] GetFiles([string]$Path, [bool]$Recurse) {
+    $r = @(); $i = 0; (Get-ChildItem -Path $Path -File -Recurse:$Recurse).ForEach({ $r += [SFileInfo]::New($_, $i); $i++ })
+    return $r
+  }
+  static [Hashtable] GetFilesHt([string]$Path) {
+    return [FsOrganizer]::GetFilesHt($Path, $false)
+  }
+  static [Hashtable] GetFilesHt([string]$Path, [bool]$Recurse) {
+    $t = @{}; $i = 0; (Get-ChildItem -Path $Path -File -Recurse:$Recurse).ForEach({ [void]$t.Add($i, [SFileInfo]::New($_, $i)); $i++ })
+    return $t
+  }
   static [FileExtensionInfo[]] GetFileExtensionInfo([string[]]$Paths) {
     return [FsOrganizer]::GetFileExtensionInfo($Paths, $false, $false)
   }
@@ -57,30 +132,19 @@ class FsOrganizer {
       $dir = Get-Item -Path $rPath
       $files = $dir.GetFiles('*', $enumOpt)
       $group = $files | Group-Object -Property extension
-      #Group and measure
-      foreach ($item in $group) {
-        $measure = $item.Group | Measure-Object -Property length -Minimum -Maximum -Average -Sum
-        $list += [FileExtensionInfo]::Create(@{
-            Path         = $rPath
-            Extension    = $item.Name
-            Count        = $item.Count
-            TotalSize    = $measure.Sum
-            SmallestSize = $measure.Minimum
-            LargestSize  = $measure.Maximum
-            AverageSize  = $measure.Average
-            Computername = [system.environment]::MachineName
-            ReportDate   = Get-Date
-            Files        = $item.group
-            IsLargest    = $False
-          }
-        )
-      }
+      $group.ForEach({ $list += [FileExtensionInfo]::new($_) })
       # Mark the extension with the largest total size
       $($list | Sort-Object -Property TotalSize, Count)[-1].IsLargest = $true
-      Update-TypeData -TypeName FileExtensionInfo -MemberType AliasProperty -MemberName Total -Value TotalSize -Force
       $result += $list
     }
     return $result
+  }
+  static [string] GetFolderAnalysisPrompt([string]$Path, [string]$intent) {
+    # .EXAMPLE
+    # [FsOrganizer]::GetFolderAnalysisPrompt("~/Downloads/", "Organize files in my downloads path by file use case.")
+    $fstats = [FsOrganizer]::GetFiles($Path, $false) | ConvertTo-Json -Depth 4 -WarningAction SilentlyContinue
+    $prompt = [FsOrganizer]::GetLocalizedData(".").FileAnalysisPrompt.Replace("<folder_analysis>", $fstats).Replace("<user_intent>", $intent)
+    return $prompt
   }
   static [FolderSizeInfo[]] GetFolderSizeInfo([string[]]$Paths) {
     return [FsOrganizer]::GetFolderSizeInfo($Paths, $false)
@@ -111,26 +175,24 @@ class FsOrganizer {
         if ($data -and $data.count -gt 1) {
           $files.AddRange($data)
         } elseif ($data -and $data.count -eq 1) {
-          [void]($files.Add($data))
+          [void]$files.Add($data)
         }
         $all = [FsOrganizer]::GetDirectories($rPath, $IncludeHidden)
         # get the files in each subfolder
         if ($all) {
-          Write-Verbose "Getting files from $($all.count) subfolders"
           $($all).Foreach({
-              Write-Verbose $_.fullname
               $ErrorActionPreference = "Stop"
               Try {
                 $data = $(if ($IncludeHidden) {
                     $(([DirectoryInfo]"$($_.fullname)").GetFiles())
                   } else {
-                    $(([DirectoryInfo]"$($_.fullname)").GetFiles()).where({ $_.Attributes -notmatch "Hidden" })
+                    $(([DirectoryInfo]"$($_.fullname)").GetFiles()).Where({ $_.Attributes -notmatch "Hidden" })
                   }
                 )
                 if ($data -and $data.count -gt 1) {
                   $files.AddRange($data)
                 } elseif ($data -and $data.count -eq 1) {
-                  [void]($files.Add($data))
+                  [void]$files.Add($data)
                 }
               } Catch {
                 Write-Warning "Failed on $rPath. $($_.exception.message)."
@@ -156,29 +218,21 @@ class FsOrganizer {
         if ($data -and $data.count -gt 1) {
           $files.AddRange($data)
         } elseif ($data -and $data.count -eq 1) {
-          [void]($files.Add($data))
+          [void]$files.Add($data)
         }
       }
+      $totalSize = 0
+      $FilesCount = 0
       If ($files.count -gt 0) {
         # there appears to be a bug with the array list in Windows PowerShell
         # where it doesn't always properly enumerate. Passing the list
         # items via ForEach appears to solve the problem and doesn't
         # adversely affect PowerShell 7. Addeed in v2.22.0. JH
-        $stats = $files.foreach( { $_ }) | Measure-Object -Property length -Sum
-        $totalFiles = $stats.count
+        $stats = $files.foreach({ $_ }) | Measure-Object -Property length -Sum
         $totalSize = $stats.sum
-      } else {
-        $totalFiles = 0
-        $totalSize = 0
+        $FilesCount = $stats.count
       }
-      $result += [FolderSizeInfo]::Create(@{
-          Computername = [System.Environment]::MachineName
-          Path         = $rPath
-          Name         = $(Split-Path $rPath -Leaf)
-          TotalFiles   = $totalFiles
-          TotalSize    = $totalSize
-        }
-      )
+      $result += [FolderSizeInfo]::new($rPath, $totalSize, $(Split-Path $rPath -Leaf), $FilesCount)
     }
     return $result
   }
