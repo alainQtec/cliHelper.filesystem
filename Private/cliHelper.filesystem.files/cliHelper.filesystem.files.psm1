@@ -1,22 +1,61 @@
 ﻿using namespace System;
 using namespace System.IO;
+using namespace Microsoft.PowerShell.Commands;
 
 class FileExtensionInfo {
   [string]$Path
-  [string]$Extension
-  [int]$Count
-  [int]$TotalSize
-  [int]$SmallestSize
-  [int]$LargestSize
-  [int]$AverageSize
-  [datetime]$ReportDate
-  [FileInfo[]]$Files
   [bool]$IsLargest
-  hidden [string]$Computername = [Environment]::MachineName
+  [string]$Extension
+  [Int64]$Count
+  [Int64]$TotalSize
+  [SFileInfo[]]$Files
+  hidden [Int64]$SmallestSize
+  hidden [Int64]$LargestSize
+  hidden [Int64]$AverageSize
 
-  static [FileExtensionInfo] Create([hashtable]$Properties) {
-    return New-Object -TypeName FileExtensionInfo -Property $Properties
+  FileExtensionInfo() {}
+  FileExtensionInfo([Microsoft.PowerShell.Commands.GroupInfo]$item) {
+    $measure = $item.Group | Measure-Object -Property length -Minimum -Maximum -Average -Sum
+    $this.Path = $item.Group[0].Directory.FullName
+    $this.Extension = $item.Name
+    $this.Count = $item.Count
+    $this.TotalSize = $measure.Sum
+    $this.SmallestSize = $measure.Minimum
+    $this.LargestSize = $measure.Maximum
+    $this.AverageSize = $measure.Average
+    $this.Files = [SFileInfo[]][IO.FileInfo[]]$item.group
+    $this.IsLargest = $False
   }
+}
+
+class sFileInfo {
+  [string]$N # Name (I have to abbreviate to reduce number of tokens sent)
+  [string]$I # Index (or Id when not specified)
+  SFileInfo() {}
+  SFileInfo([FileInfo]$file) {
+    [void][sFileInfo]::_Create($file, $this.GetId(), [ref]$this)
+  }
+  SFileInfo([FileInfo]$file, [string]$Id) {
+    [void][sFileInfo]::_Create($file, $Id, [ref]$this)
+  }
+  static [sFileInfo] Create() { return [sFileInfo]::new() }
+  static [sFileInfo] Create([FileInfo]$file) {
+    return [sFileInfo]::Create($file, [sFileInfo]::GetId($file.Name))
+  }
+  static [sFileInfo] Create([FileInfo]$file, [string]$Id) {
+    $r = [sFileInfo]::new(); return [sFileInfo]::_Create($file, $Id, [ref]$r)
+  }
+  static hidden [sFileInfo] _Create([FileInfo]$file, [string]$Id, [ref]$o) {
+    $o.Value.N = $file.Name; $o.Value.I = $Id;
+    $o.Value.PsObject.Methods.Add([psscriptmethod]::new("IsReadOnly", [scriptblock]::Create("return [bool]`$$($file.IsReadOnly)") ))
+    $o.Value.PsObject.Methods.Add([psscriptmethod]::new("LastWriteTime", [scriptblock]::Create("return [string]`$$($file.LastWriteTime.ToFileTime())") ))
+    return $o.Value
+  }
+  static hidden [guid] GetId([string]$name) {
+    $t = $name.Trim(); $t = $t.Length -lt 16 ? $t + (" " * (16 - $t.Length)) : $t.Substring(0, 16)
+    return [guid]::new([System.BitConverter]::ToString([System.Text.Encoding]::UTF8.GetBytes($t)).Replace("-", "").ToLower().TrimEnd().Insert(8, "-").Insert(13, "-").Insert(18, "-").Insert(23, "-").Substring(0, 36))
+  }
+  [guid] GetId() { return [sFileInfo]::GetId($this.N) }
 }
 
 class RecentOpenInfo {
@@ -25,7 +64,7 @@ class RecentOpenInfo {
   [string]$href
   [string]$exec
   [string]$modified
-  [int]$count
+  [Int64]$count
 
   RecentOpenInfo() {}
   RecentOpenInfo([System.Xml.XmlElement]$info) {
