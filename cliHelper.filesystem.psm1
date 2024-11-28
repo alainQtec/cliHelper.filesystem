@@ -27,8 +27,8 @@ enum TimeInterval {
 class FsOrganizer : LLMagent {
   static [hashtable] $_Files
   FsOrganizer() {}
-  static [void] Organize([string]$Directory) {
-    [FsOrganizer]::Organize($Directory, "Organize files in my downloads path by file use case.")
+  static [PSCustomObject[]] Organize([string]$Directory) {
+    return [FsOrganizer]::Organize($Directory, "Organize files in $((Get-Item $Directory).BaseName) path by file use case.")
   }
   static [PSCustomObject[]] Organize([string]$Directory, [string]$intent) {
     $r = @(); $f = [FsOrganizer]::GetFilesHt($Directory); $l = $Directory.Length
